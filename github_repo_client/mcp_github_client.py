@@ -15,8 +15,6 @@ import re
 import yaml
 import httpx
 
-from github_repo_client import defaults
-
 logger = logging.getLogger(__name__)
 
 
@@ -163,14 +161,18 @@ class MCPRepoProvider:
             dependency_files: dict | None = None,
             ignore_directories: list | None = None,
     ):
+        if file_extensions is None or dependency_files is None or ignore_directories is None:
+            raise ValueError(
+                "MCPRepoProvider requires file_extensions, dependency_files, and "
+                "ignore_directories to be explicitly provided by the calling service."
+            )
         self.repo_url = repo_url
         self.client = MCPGitHubClient(repo_url, github_token=github_token)
         self._dir_cache: dict[str, list[dict]] = {}
 
-        # Use provided config or fall back to package defaults
-        self.file_extensions = file_extensions or defaults.FILE_EXTENSIONS
-        self.dependency_files = dependency_files or defaults.DEPENDENCY_FILES
-        self.ignore_directories = ignore_directories or defaults.IGNORE_DIRECTORIES
+        self.file_extensions = file_extensions
+        self.dependency_files = dependency_files
+        self.ignore_directories = ignore_directories
 
     async def initialize(self):
         """Connect to the GitHub API."""
@@ -509,6 +511,17 @@ class MCPRepoProvider:
         return files
 
     async def _detect_language(self, dir_path: str) -> str:
+        # Priority 1: check actual source file extensions (mirrors service_identifier.py)
+        # This prevents JS/TS ambiguity — a service with .ts files is TypeScript regardless
+        # of what dependency files it has.
+        all_files = await self._list_files_recursive(dir_path, set(self.ignore_directories), max_depth=50)
+        file_names = [f.get("name", "") for f in all_files]
+        for language, extensions in self.file_extensions.items():
+            for ext in extensions:
+                if any(name.endswith(ext) for name in file_names):
+                    return language
+
+        # Priority 2: fall back to dependency files
         items = await self._list_directory(dir_path)
         return self._detect_language_from_items(items)
 
